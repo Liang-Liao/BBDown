@@ -2,11 +2,11 @@
 using System.Collections.Generic;
 using System.Text;
 
-namespace BBDown
+namespace BBDown.Core.Entity
 {
-    class BBDownEntity
+    public class Entity
     {
-        public struct Page
+        public class Page
         {
             public int index;
             public string aid;
@@ -15,6 +15,9 @@ namespace BBDown
             public string title;
             public int dur;
             public string res;
+            public string cover;
+            public string desc;
+            public List<ViewPoint> points = new List<ViewPoint>();
 
             public Page(int index, string aid, string cid, string epid, string title, int dur, string res)
             {
@@ -26,9 +29,66 @@ namespace BBDown
                 this.dur = dur;
                 this.res = res;
             }
+
+            public Page(int index, string aid, string cid, string epid, string title, int dur, string res, string cover)
+            {
+                this.aid = aid;
+                this.index = index;
+                this.cid = cid;
+                this.epid = epid;
+                this.title = title;
+                this.dur = dur;
+                this.res = res;
+                this.cover = cover;
+            }
+
+            public Page(int index, string aid, string cid, string epid, string title, int dur, string res, string cover, string desc)
+            {
+                this.aid = aid;
+                this.index = index;
+                this.cid = cid;
+                this.epid = epid;
+                this.title = title;
+                this.dur = dur;
+                this.res = res;
+                this.cover = cover;
+                this.desc = desc;
+            }
+
+            public Page(int index, Page page)
+            {
+                this.index = index;
+                this.aid = page.aid;
+                this.cid = page.cid;
+                this.epid = page.epid;
+                this.title = page.title;
+                this.dur = page.dur;
+                this.res = page.res;
+                this.cover = page.cover;
+            }
+
+            public override bool Equals(object obj)
+            {
+                return obj is Page page &&
+                       aid == page.aid &&
+                       cid == page.cid &&
+                       epid == page.epid;
+            }
+
+            public override int GetHashCode()
+            {
+                return HashCode.Combine(aid, cid, epid);
+            }
         }
 
-        public struct Video
+        public class ViewPoint
+        {
+            public string title;
+            public int start;
+            public int end;
+        }
+
+        public class Video
         {
             public string id;
             public string dfn;
@@ -58,7 +118,7 @@ namespace BBDown
             }
         }
 
-        public struct Audio
+        public class Audio
         {
             public string id;
             public string dfn;
@@ -83,14 +143,14 @@ namespace BBDown
             }
         }
 
-        public struct Subtitle
+        public class Subtitle
         {
             public string lan;
             public string url;
             public string path;
         }
 
-        public struct Clip
+        public class Clip
         {
             public int index;
             public long from;

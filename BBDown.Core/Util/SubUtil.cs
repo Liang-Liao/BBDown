@@ -2,17 +2,16 @@
 using System.Collections.Generic;
 using System.IO;
 using System.Text;
-using static BBDown.BBDownEntity;
-using static BBDown.BBDownUtil;
-using static BBDown.BBDownLogger;
+using static BBDown.Core.Entity.Entity;
+using static BBDown.Core.Util.HTTPUtil;
 using System.Text.RegularExpressions;
 using System.Text.Json;
 using System.Linq;
 using System.Threading.Tasks;
 
-namespace BBDown
+namespace BBDown.Core.Util
 {
-    class BBDownSubUtil
+    public class SubUtil
     {
         //https://i0.hdslb.com/bfs/subtitle/subtitle_lan.json
         public static (string, string) GetSubtitleCode(string key)
@@ -224,7 +223,7 @@ namespace BBDown
             {
                 try
                 {
-                    string api = $"https://app.global.bilibili.com/intl/gateway/v2/app/subtitle?&ep_id={epId}";
+                    string api = $"https://api.bilibili.tv/intl/gateway/web/v2/subtitle?&episode_id={epId}";
                     string json = await GetWebSourceAsync(api);
                     using var infoJson = JsonDocument.Parse(json);
                     var subs = infoJson.RootElement.GetProperty("data").GetProperty("subtitles").EnumerateArray();
@@ -232,8 +231,8 @@ namespace BBDown
                     {
                         Subtitle subtitle = new Subtitle();
                         subtitle.url = sub.GetProperty("url").ToString();
-                        subtitle.lan = sub.GetProperty("key").ToString();
-                        subtitle.path = $"{aid}/{aid}.{cid}.{subtitle.lan}.srt";
+                        subtitle.lan = sub.GetProperty("lang_key").ToString();
+                        subtitle.path = $"{aid}/{aid}.{cid}.{subtitle.lan}{(subtitle.url.Contains(".json") ? ".srt" : ".ass")}";
                         subtitles.Add(subtitle);
                     }
                     return subtitles;
@@ -256,7 +255,7 @@ namespace BBDown
                     subtitles.Add(subtitle);
                 }
                 //无字幕片源 但是字幕没上导致的空列表，尝试从国际接口获取
-                if (subtitles.Count == 0)
+                if (subtitles.Count == 0 && !string.IsNullOrEmpty(epId))
                 {
                     return await GetSubtitlesAsync(aid, cid, epId, true);
                 }
@@ -308,7 +307,10 @@ namespace BBDown
 
         public static async Task SaveSubtitleAsync(string url, string path)
         {
-            await File.WriteAllTextAsync(path, ConvertSubFromJson(await GetWebSourceAsync(url)), new UTF8Encoding());
+            if (path.EndsWith(".srt"))
+                await File.WriteAllTextAsync(path, ConvertSubFromJson(await GetWebSourceAsync(url)), new UTF8Encoding());
+            else
+                await File.WriteAllTextAsync(path, await GetWebSourceAsync(url), new UTF8Encoding());
         }
 
         private static string ConvertSubFromJson(string jsonString)

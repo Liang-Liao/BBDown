@@ -9,11 +9,11 @@ using System.Net.Http.Headers;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Threading.Tasks;
-using static BBDown.BBDownLogger;
+using static BBDown.Core.Logger;
 
-namespace BBDown
+namespace BBDown.Core
 {
-    class BBDownAppHelper
+    class AppHelper
     {
         private static string API = "https://grpc.biliapi.net/bilibili.app.playurl.v1.PlayURL/PlayView";
         private static string API2 = "https://app.bilibili.com/bilibili.pgc.gateway.player.v1.PlayURL/PlayView";
@@ -59,7 +59,7 @@ namespace BBDown
             }
             catch (Exception ex)
             {
-                if (DEBUG_LOG)
+                if (Config.DEBUG_LOG)
                 {
                     LogError(ex.Message);
                 }
@@ -113,6 +113,7 @@ namespace BBDown
                     audios.Add(new AudioInfoWithCodecName(
                         item.Id,
                         item.baseUrl,
+                        item.backupUrls,
                         item.Bandwidth,
                         "M4A"
                     ));
@@ -124,6 +125,7 @@ namespace BBDown
                 audios.Add(new AudioInfoWithCodecName(
                     resp.videoInfo.Dolby.Audio.Id,
                     resp.videoInfo.Dolby.Audio.baseUrl,
+                    resp.videoInfo.Dolby.Audio.backupUrls,
                     resp.videoInfo.Dolby.Audio.Bandwidth,
                     "E-AC-3"
                 ));
@@ -174,7 +176,7 @@ namespace BBDown
                 ["te"] = "trailers",
                 ["x-bili-fawkes-req-bin"] = GenerateFawkesReqBin(),
                 ["x-bili-metadata-bin"] = GenerateMetadataBin(appkey),
-                ["authorization"] = $"identify_v1 {Program.TOKEN}",
+                ["authorization"] = $"identify_v1 {Config.TOKEN}",
                 ["x-bili-device-bin"] = GenerateDeviceBin(),
                 ["x-bili-network-bin"] = GenerateNetworkBin(),
                 ["x-bili-restriction-bin"] = "",
@@ -401,7 +403,7 @@ namespace BBDown
                 foreach (KeyValuePair<string, string> header in headers)
                     request.Headers.TryAddWithoutValidation(header.Key, header.Value);
 
-            HttpResponseMessage response = await BBDownUtil.AppHttpClient.SendAsync(request);
+            HttpResponseMessage response = await Util.HTTPUtil.AppHttpClient.SendAsync(request);
             byte[] bytes = await response.Content.ReadAsByteArrayAsync();
 
             return bytes;
@@ -414,21 +416,24 @@ namespace BBDown
         public uint Id { get; }
         [JsonPropertyName("base_url")]
         public string BaseUrl { get; }
+        [JsonPropertyName("backup_url")]
+        public List<string> BackupUrl { get; }
         [JsonPropertyName("bandwidth")]
         public uint Bandwidth { get; }
         [JsonPropertyName("codecs")]
         public string Codecs { get; }
 
-        public AudioInfoWithCodecName(uint id, string base_url, uint bandwidth, string codecs)
+        public AudioInfoWithCodecName(uint id, string base_url,List<string> backup_url, uint bandwidth, string codecs)
         {
             Id = id;
             BaseUrl = base_url;
+            BackupUrl = backup_url;
             Bandwidth = bandwidth;
             Codecs = codecs;
         }
 
-        public override bool Equals(object obj) => obj is AudioInfoWithCodecName other && Id == other.Id && BaseUrl == other.BaseUrl && Bandwidth == other.Bandwidth && Codecs == other.Codecs;
-        public override int GetHashCode() => HashCode.Combine(Id, BaseUrl, Bandwidth, Codecs);
+        public override bool Equals(object obj) => obj is AudioInfoWithCodecName other && Id == other.Id && BaseUrl == other.BaseUrl && BackupUrl.SequenceEqual(other.BackupUrl) && Bandwidth == other.Bandwidth && Codecs == other.Codecs;
+        public override int GetHashCode() => HashCode.Combine(Id, BaseUrl, BackupUrl, Bandwidth, Codecs);
     }
 
     internal class AudioInfoWitCodecId

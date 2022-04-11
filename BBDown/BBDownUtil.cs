@@ -3,6 +3,7 @@ using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Collections.Specialized;
+using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Net;
@@ -16,19 +17,14 @@ using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Web;
-using static BBDown.BBDownEntity;
-using static BBDown.BBDownLogger;
+using static BBDown.Core.Entity.Entity;
+using static BBDown.Core.Logger;
+using static BBDown.Core.Util.HTTPUtil;
 
 namespace BBDown
 {
     static class BBDownUtil
     {
-        public static readonly HttpClient AppHttpClient = new(new HttpClientHandler
-        {
-            AllowAutoRedirect = true,
-            AutomaticDecompression = DecompressionMethods.All
-        });
-
         public static async Task CheckUpdateAsync()
         {
             try
@@ -53,6 +49,7 @@ namespace BBDown
             var avid = input;
             if (input.StartsWith("http"))
             {
+                Match match = null;
                 if (input.Contains("b23.tv"))
                     input = await Get302(input);
                 if (input.Contains("video/av"))
@@ -85,9 +82,35 @@ namespace BBDown
                     string epId = Regex.Match(input, "/ep(\\d{1,})").Groups[1].Value;
                     avid = $"ep:{epId}";
                 }
+                else if (input.Contains("/medialist/") && input.Contains("business_id=") && input.Contains("business=space_collection")) //列表类型是合集
+                {
+                    string bizId = GetQueryString("business_id", input);
+                    avid = $"listBizId:{bizId}";
+                }
+                else if (input.Contains("/medialist/") && input.Contains("business_id=") && input.Contains("business=space_series")) //列表类型是系列
+                {
+                    string bizId = GetQueryString("business_id", input);
+                    avid = $"seriesBizId:{bizId}";
+                }
+                else if (input.Contains("/channel/collectiondetail?sid="))
+                {
+                    string bizId = GetQueryString("sid", input);
+                    avid = $"listBizId:{bizId}";
+                }
+                else if (input.Contains("/channel/seriesdetail?sid="))
+                {
+                    string bizId = GetQueryString("sid", input);
+                    avid = $"seriesBizId:{bizId}";
+                }
+                else if (input.Contains("/space.bilibili.com/") && input.Contains("/favlist"))
+                {
+                    string mid = Regex.Match(input, "space\\.bilibili\\.com/(\\d{1,})").Groups[1].Value;
+                    string fid = GetQueryString("fid", input);
+                    avid = $"favId:{fid}:{mid}";
+                }
                 else if (input.Contains("/space.bilibili.com/"))
                 {
-                    string mid = Regex.Match(input, "space.bilibili.com/(\\d{1,})").Groups[1].Value;
+                    string mid = Regex.Match(input, "space\\.bilibili\\.com/(\\d{1,})").Groups[1].Value;
                     avid = $"mid:{mid}";
                 }
                 else if (input.Contains("ep_id="))
@@ -95,10 +118,15 @@ namespace BBDown
                     string epId = GetQueryString("ep_id", input);
                     avid = $"ep:{epId}";
                 }
-                else if (Regex.IsMatch(input, "global.bilibili.com/play/\\d+/(\\d+)"))
+                else if ((match = Regex.Match(input, "global\\.bilibili\\.com/play/\\d+/(\\d+)")).Success)
                 {
-                    string epId = Regex.Match(input, "global.bilibili.com/play/\\d+/(\\d+)").Groups[1].Value;
+                    string epId = match.Groups[1].Value;
                     avid = $"ep:{epId}";
+                }
+                else if ((match = Regex.Match(input, "bangumi/media/(md\\d+)")).Success)
+                {
+                    var mdId = match.Groups[1].Value;
+                    avid = await GetAvIdAsync(mdId);
                 }
                 else
                 {
@@ -132,9 +160,28 @@ namespace BBDown
                 string web = await GetWebSourceAsync("https://www.bilibili.com/bangumi/play/" + input);
                 Regex regex = new Regex("window.__INITIAL_STATE__=([\\s\\S].*?);\\(function\\(\\)");
                 string json = regex.Match(web).Groups[1].Value;
-                using var jDoc = JsonDocument.Parse(json);
-                string epId = jDoc.RootElement.GetProperty("epList").EnumerateArray().First().GetProperty("id").ToString();
-                avid = $"ep:{epId}";
+                try
+                {
+                    using var jDoc = JsonDocument.Parse(json);
+                    string epId = jDoc.RootElement.GetProperty("epList").EnumerateArray().First().GetProperty("id").ToString();
+                    avid = $"ep:{epId}";
+                }
+                catch (JsonException)
+                {
+                    throw new Exception("输入有误");
+                }
+            }
+            else if (input.StartsWith("md"))
+            {
+                string mdId = Regex.Match(input, "md(\\d{1,})").Groups[1].Value;
+                try
+                {
+                    avid = await GetAvIdAsync(await GetSSIdByMDAsync(mdId));
+                }
+                catch (JsonException)
+                {
+                    throw new Exception("输入有误");
+                }
             }
             else
             {
@@ -167,55 +214,15 @@ namespace BBDown
             }
         }
 
-        public static string FormatTime(int time)
+        public static string FormatTime(int time, bool absolute = false)
         {
             TimeSpan ts = new TimeSpan(0, 0, time);
             string str = "";
+            if (!absolute)
             str = (ts.Hours.ToString("00") == "00" ? "" : ts.Hours.ToString("00") + "h") + ts.Minutes.ToString("00") + "m" + ts.Seconds.ToString("00") + "s";
+            else
+                str = ts.Hours.ToString("00") + ":" + ts.Minutes.ToString("00") + ":" + ts.Seconds.ToString("00");
             return str;
-        }
-
-        public static async Task<string> GetWebSourceAsync(string url)
-        {
-            string htmlCode = string.Empty;
-            try
-            {
-                using var webRequest = new HttpRequestMessage(HttpMethod.Get, url);
-                webRequest.Headers.Add("UserAgent", "Mozilla/5.0 (Windows NT 10.0; WOW64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/78.0.3904.108 Safari/537.36");
-                webRequest.Headers.Add("Accept-Encoding", "gzip, deflate");
-                webRequest.Headers.Add("Cookie", (url.Contains("/ep") || url.Contains("/ss")) ? Program.COOKIE + ";CURRENT_FNVAL=80;" : Program.COOKIE);
-                if (url.Contains("api.bilibili.com/pgc/player/web/playurl") || url.Contains("api.bilibili.com/pugv/player/web/playurl"))
-                    webRequest.Headers.Add("Referer", "https://www.bilibili.com");
-                webRequest.Headers.CacheControl = CacheControlHeaderValue.Parse("no-cache");
-                webRequest.Headers.Connection.Clear();
-
-                LogDebug("获取网页内容：Url: {0}, Headers: {1}", url, webRequest.Headers);
-                var webResponse = (await AppHttpClient.SendAsync(webRequest, HttpCompletionOption.ResponseHeadersRead)).EnsureSuccessStatusCode();
-
-                htmlCode = await webResponse.Content.ReadAsStringAsync();
-            }
-            catch (Exception)
-            {
-                ;
-            }
-            LogDebug("Response: {0}", htmlCode);
-            return htmlCode;
-        }
-
-        public static async Task<string> GetPostResponseAsync(string Url, byte[] postData)
-        {
-            LogDebug("Post to: {0}, data: {1}", Url, Convert.ToBase64String(postData));
-            string htmlCode = string.Empty;
-            using HttpRequestMessage request = new(HttpMethod.Post, Url);
-            request.Headers.Add("ContentType", "application/grpc");
-            request.Headers.Add("ContentLength", postData.Length.ToString());
-            request.Headers.Add("UserAgent", "Dalvik/2.1.0 (Linux; U; Android 6.0.1; oneplus a5010 Build/V417IR) 6.10.0 os/android model/oneplus a5010 mobi_app/android build/6100500 channel/bili innerVer/6100500 osVer/6.0.1 network/2");
-            request.Headers.Add("Cookie", Program.COOKIE);
-            request.Content = new ByteArrayContent(postData);
-            var webResponse = await AppHttpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead);
-            Stream myRequestStream = await webResponse.Content.ReadAsStreamAsync();
-            htmlCode = await webResponse.Content.ReadAsStringAsync();
-            return htmlCode;
         }
 
         /// <summary>
@@ -264,9 +271,18 @@ namespace BBDown
             return epId;
         }
 
+        public static async Task<string> GetSSIdByMDAsync(string mdId)
+		{
+            var api = $"https://api.bilibili.com/pgc/review/user?media_id={mdId}";
+            var json = await GetWebSourceAsync(api);
+            using var jDoc = JsonDocument.Parse(json);
+            var ssId = "ss" + jDoc.RootElement.GetProperty("result").GetProperty("media").GetProperty("season_id").ToString();
+            return ssId;
+        }
+
         private static async Task RangeDownloadToTmpAsync(int id, string url, string tmpName, long fromPosition, long? toPosition, Action<int, long, long> onProgress, bool failOnRangeNotSupported = false)
         {
-            var lastTime = File.Exists(tmpName) ? new FileInfo(tmpName).LastWriteTimeUtc : DateTimeOffset.MinValue;
+            DateTimeOffset? lastTime = File.Exists(tmpName) ? new FileInfo(tmpName).LastWriteTimeUtc : null;
             using (var fileStream = new FileStream(tmpName, FileMode.OpenOrCreate))
             {
                 fileStream.Seek(0, SeekOrigin.End);
@@ -274,11 +290,11 @@ namespace BBDown
 
                 using var httpRequestMessage = new HttpRequestMessage();
                 if (!url.Contains("platform=android_tv_yst") && !url.Contains("platform=android"))
-                    httpRequestMessage.Headers.Add("Referer", "https://www.bilibili.com");
-                httpRequestMessage.Headers.Add("User-Agent", "Mozilla/5.0");
-                httpRequestMessage.Headers.Add("Cookie", Program.COOKIE);
+                    httpRequestMessage.Headers.TryAddWithoutValidation("Referer", "https://www.bilibili.com");
+                httpRequestMessage.Headers.TryAddWithoutValidation("User-Agent", "Mozilla/5.0");
+                httpRequestMessage.Headers.TryAddWithoutValidation("Cookie", Core.Config.COOKIE);
                 httpRequestMessage.Headers.Range = new(downloadedBytes, toPosition);
-                httpRequestMessage.Headers.IfRange = new(lastTime);
+                httpRequestMessage.Headers.IfRange = lastTime != null ? new(lastTime.Value) : null;
                 httpRequestMessage.RequestUri = new(url);
 
                 using var response = (await AppHttpClient.SendAsync(httpRequestMessage, HttpCompletionOption.ResponseHeadersRead)).EnsureSuccessStatusCode();
@@ -350,6 +366,7 @@ namespace BBDown
 
         public static async Task MultiThreadDownloadFileAsync(string url, string path, bool aria2c, string aria2cProxy)
         {
+            LogDebug("Start downloading: {0}", url);
             if (aria2c)
             {
                 await BBDownAria2c.DownloadFileByAria2cAsync(url, path, aria2cProxy);
@@ -360,6 +377,12 @@ namespace BBDown
             }
             long fileSize = await GetFileSizeAsync(url);
             LogDebug("文件大小：{0} bytes", fileSize);
+            //已下载过, 跳过下载
+            if (File.Exists(path) && new FileInfo(path).Length == fileSize)
+            {
+                LogDebug("文件已下载过, 跳过下载");
+                return;
+            }
             List<Clip> allClips = GetAllClips(url, fileSize);
             int total = allClips.Count;
             LogDebug("分段数量：{0}", total);
@@ -437,7 +460,7 @@ namespace BBDown
             if (files.Length == 1)
             {
                 FileInfo fi = new FileInfo(files[0]);
-                fi.MoveTo(outputFilePath);
+                fi.MoveTo(outputFilePath, true);
                 return;
             }
 
@@ -489,9 +512,9 @@ namespace BBDown
         {
             using var httpRequestMessage = new HttpRequestMessage();
             if (!url.Contains("platform=android_tv_yst") && !url.Contains("platform=android"))
-                httpRequestMessage.Headers.Add("Referer", "https://www.bilibili.com");
-            httpRequestMessage.Headers.Add("User-Agent", "Mozilla/5.0");
-            httpRequestMessage.Headers.Add("Cookie", Program.COOKIE);
+                httpRequestMessage.Headers.TryAddWithoutValidation("Referer", "https://www.bilibili.com");
+            httpRequestMessage.Headers.TryAddWithoutValidation("User-Agent", "Mozilla/5.0");
+            httpRequestMessage.Headers.TryAddWithoutValidation("Cookie", Core.Config.COOKIE);
             httpRequestMessage.RequestUri = new(url);
             var response = (await AppHttpClient.SendAsync(httpRequestMessage, HttpCompletionOption.ResponseHeadersRead)).EnsureSuccessStatusCode();
             long totalSizeBytes = response.Content.Headers.ContentLength ?? 0;
@@ -526,12 +549,17 @@ namespace BBDown
             return redirectedUrl;
         }
 
-        public static string GetValidFileName(string input, string re = ".")
+        public static string GetValidFileName(string input, string re = ".", bool filterSlash = false)
         {
             string title = input;
             foreach (char invalidChar in Path.GetInvalidFileNameChars())
             {
                 title = title.Replace(invalidChar.ToString(), re);
+            }
+            if (filterSlash)
+            {
+                title = title.Replace("/", re);
+                title = title.Replace("\\", re);
             }
             return title;
         }
@@ -627,11 +655,6 @@ namespace BBDown
             return dict;
         }
 
-        public static string GetMaxQn()
-        {
-            return Program.qualitys.Keys.First();
-        }
-
         public static NameValueCollection GetTVLoginParms()
         {
             NameValueCollection sb = new();
@@ -661,6 +684,111 @@ namespace BBDown
             sb.Add($"sign", GetSign(ToQueryString(sb)));
 
             return sb;
+        }
+
+        /// <summary>
+        /// 检测ffmpeg是否识别杜比视界
+        /// </summary>
+        /// <returns></returns>
+        public static bool CheckFFmpegDOVI()
+        {
+            try
+            {
+                var process = new Process
+                {
+                    StartInfo = new ProcessStartInfo
+                    {
+                        FileName = "ffmpeg",
+                        Arguments = "-version",
+                        UseShellExecute = false,
+                        RedirectStandardError = true,
+                        RedirectStandardOutput = true,
+                        CreateNoWindow = true
+                    }
+                };
+                process.Start();
+                string info = process.StandardOutput.ReadToEnd() + Environment.NewLine + process.StandardError.ReadToEnd();
+                process.WaitForExit();
+                var match = Regex.Match(info, "libavutil\\s+(\\d+)\\. (\\d+)\\.");
+                if (!match.Success) return false;
+                if((Convert.ToInt32(match.Groups[1].Value)==57 && Convert.ToInt32(match.Groups[1].Value) >= 17)
+                    || Convert.ToInt32(match.Groups[1].Value) > 57)
+                {
+                    return true;
+                }
+            }
+            catch (Exception)
+            {
+            }
+            return false;
+        }
+
+        /// <summary>
+        /// 获取章节信息
+        /// </summary>
+        /// <param name="cid"></param>
+        /// <param name="aid"></param>
+        /// <returns></returns>
+        public static async Task<List<ViewPoint>> FetchPointsAsync(string cid, string aid)
+        {
+            var ponints = new List<ViewPoint>();
+            try
+            {
+                string api = $"https://api.bilibili.com/x/player/v2?cid={cid}&aid={aid}";
+                string json = await GetWebSourceAsync(api);
+                using var infoJson = JsonDocument.Parse(json);
+                if (infoJson.RootElement.GetProperty("data").TryGetProperty("view_points", out JsonElement vPoint))
+                {
+                    foreach (var point in vPoint.EnumerateArray())
+                    {
+                        ponints.Add(new ViewPoint()
+                        {
+                            title = point.GetProperty("content").GetString(),
+                            start = int.Parse(point.GetProperty("from").ToString()),
+                            end = int.Parse(point.GetProperty("to").ToString())
+                        });
+                    }
+                }
+            }
+            catch (Exception) { }
+            return ponints;
+        }
+
+        /// <summary>
+        /// 生成metadata文件，用于ffmpeg混流章节信息
+        /// </summary>
+        /// <param name="points"></param>
+        /// <returns></returns>
+        public static string GetFFmpegMetaString(List<ViewPoint> points)
+        {
+            StringBuilder sb = new StringBuilder();
+            sb.AppendLine(";FFMETADATA");
+            foreach (var p in points)
+            {
+                var time = 1000; //固定 1000
+                sb.AppendLine("[CHAPTER]");
+                sb.AppendLine($"TIMEBASE=1/{time}");
+                sb.AppendLine($"START={p.start * time}");
+                sb.AppendLine($"END={p.end * time}");
+                sb.AppendLine($"title={p.title}");
+                sb.AppendLine();
+            }
+            return sb.ToString();
+        }
+
+        /// <summary>
+        /// 生成metadata文件，用于mp4box混流章节信息
+        /// </summary>
+        /// <param name="points"></param>
+        /// <returns></returns>
+        public static string GetMp4boxMetaString(List<ViewPoint> points)
+        {
+            StringBuilder sb = new StringBuilder();
+            foreach (var p in points)
+            {
+                sb.AppendLine($"{FormatTime(p.start, true)} {p.title}");
+            }
+            return sb.ToString();
         }
     }
 }
